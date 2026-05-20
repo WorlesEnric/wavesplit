@@ -35,19 +35,19 @@ def test_repeated_vad_refinement_refuses_artificial_split(monkeypatch):
     )
 
     assert refinements[0]["status"] == "skipped"
-    assert refinements[0]["reason"] == "refuse_artificial_split"
+    assert refinements[0]["reason"] == "refuse_adjusted_repeated_run"
     assert alignments[0].raw_start_sec == 1.0
     assert all("repeated_text_vad_refined" not in item.flags for item in alignments)
 
 
-def test_repeated_vad_refinement_marks_unmatched_tail_when_speech_count_is_short(monkeypatch):
+def test_repeated_vad_refinement_reconciles_short_speech_count(monkeypatch):
     def fake_detect(*args, **kwargs):
         return (
-            [(1.0, 1.7), (3.0, 3.35), (3.35, 3.7)],
+            [(1.0, 1.7), (3.0, 3.7)],
             {
                 "initial_segment_count": 2,
                 "initial_intervals": [[1.0, 1.7], [3.0, 3.7]],
-                "adjustment": "split",
+                "adjustment": "none",
             },
         )
 
@@ -63,14 +63,46 @@ def test_repeated_vad_refinement_marks_unmatched_tail_when_speech_count_is_short
         config=AppConfig(),
     )
 
-    assert refinements[0]["status"] == "applied_missing_tail"
+    assert refinements[0]["status"] == "applied_missing_reconciled"
     assert refinements[0]["expected_segment_count"] == 3
     assert refinements[0]["detected_segment_count"] == 2
     assert alignments[0].raw_start_sec == 1.0
     assert alignments[1].raw_start_sec == 3.0
     assert alignments[2].start_sec is None
     assert "missing_audio_segment" in alignments[2].flags
-    assert "unmatched_indices_assumed_tail" in alignments[2].flags
+    assert "unmatched_indices_vad_reconciled" in alignments[2].flags
+
+
+def test_repeated_vad_refinement_can_mark_missing_middle(monkeypatch):
+    def fake_detect(*args, **kwargs):
+        return (
+            [(1.05, 1.65), (5.05, 5.65)],
+            {
+                "initial_segment_count": 2,
+                "initial_intervals": [[1.05, 1.65], [5.05, 5.65]],
+                "adjustment": "none",
+            },
+        )
+
+    monkeypatch.setattr("wavesplit.alignment.detect_speech_intervals_in_window", fake_detect)
+    alignments = _repeated_alignments()
+
+    refinements = _refine_repeated_run(
+        alignments,
+        0,
+        3,
+        audio_path="unused.wav",
+        audio_duration_sec=8.0,
+        config=AppConfig(),
+    )
+
+    assert refinements[0]["status"] == "applied_missing_reconciled"
+    assert refinements[0]["assigned_line_indices"] == [1, 3]
+    assert refinements[0]["missing_line_indices"] == [2]
+    assert alignments[0].raw_start_sec == 1.05
+    assert alignments[1].start_sec is None
+    assert alignments[2].raw_start_sec == 5.05
+    assert "missing_audio_segment" in alignments[1].flags
 
 
 def test_repeated_vad_refinement_prefers_natural_exact_count(monkeypatch):
@@ -81,7 +113,7 @@ def test_repeated_vad_refinement_prefers_natural_exact_count(monkeypatch):
         calls.append(adjust_to_target)
         if not adjust_to_target:
             return (
-                [(1.0, 1.7), (3.0, 3.7), (5.0, 5.7)],
+                [(1.1, 1.8), (3.1, 3.8), (5.1, 5.8)],
                 {"initial_segment_count": 3, "adjustment": "none", "adjust_to_target": False},
             )
         return (
@@ -102,9 +134,10 @@ def test_repeated_vad_refinement_prefers_natural_exact_count(monkeypatch):
     )
 
     assert calls == [False]
-    assert refinements[0]["status"] == "applied"
+    assert refinements[0]["status"] == "verified"
     assert [item.raw_start_sec for item in alignments] == [1.0, 3.0, 5.0]
     assert all("missing_audio_segment" not in item.flags for item in alignments)
+    assert all("repeated_text_vad_refined" not in item.flags for item in alignments)
 
 
 def test_ctc_line_entries_are_grouped_by_transcript_token_counts():

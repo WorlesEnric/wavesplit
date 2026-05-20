@@ -406,29 +406,7 @@ def _refine_repeated_run(
             }
         ]
 
-    if len(intervals) != target_count:
-        try:
-            intervals, debug = detect_speech_intervals_in_window(
-                audio_path,
-                target_count=target_count,
-                audio_duration_sec=audio_duration_sec,
-                config=config.alignment,
-                start_sec=window_start,
-                end_sec=window_end,
-                prefer_balanced=True,
-                adjust_to_target=True,
-            )
-        except Exception as exc:
-            return [
-                {
-                    "line_start": first.line_index,
-                    "line_end": last.line_index,
-                    "status": "failed",
-                    "reason": str(exc),
-                }
-            ]
-
-    if len(intervals) != target_count:
+    if debug.get("adjustment") != "none":
         return [
             {
                 "line_start": first.line_index,
@@ -436,47 +414,20 @@ def _refine_repeated_run(
                 "status": "skipped",
                 "initial_segment_count": debug.get("initial_segment_count"),
                 "adjustment": debug.get("adjustment"),
+                "reason": "refuse_adjusted_repeated_run",
             }
         ]
-    if debug.get("adjustment") == "split":
-        initial_intervals = _debug_intervals(debug.get("initial_intervals"))
-        if 0 < len(initial_intervals) < end - start:
-            for alignment, (new_start, new_end) in zip(alignments[start : start + len(initial_intervals)], initial_intervals):
-                alignment.raw_start_sec = round(new_start, 3)
-                alignment.raw_end_sec = round(new_end, 3)
-                alignment.start_sec = alignment.raw_start_sec
-                alignment.end_sec = alignment.raw_end_sec
-                alignment.flags.append("repeated_text_vad_refined")
-                alignment.flags.append("repeated_text_count_mismatch")
 
-            for alignment in alignments[start + len(initial_intervals) : end]:
-                alignment.raw_start_sec = None
-                alignment.raw_end_sec = None
-                alignment.start_sec = None
-                alignment.end_sec = None
-                alignment.flags.append(MISSING_AUDIO_FLAG)
-                alignment.flags.append("repeated_text_count_mismatch")
-                alignment.flags.append("unmatched_indices_assumed_tail")
+    if len(intervals) < target_count:
+        return _reconcile_short_repeated_run(
+            alignments,
+            start,
+            end,
+            intervals,
+            debug,
+        )
 
-            return [
-                {
-                    "line_start": first.line_index,
-                    "line_end": last.line_index,
-                    "status": "applied_missing_tail",
-                    "text": first.normalized_text,
-                    "expected_segment_count": end - start,
-                    "detected_segment_count": len(initial_intervals),
-                    "missing_line_start": alignments[start + len(initial_intervals)].line_index,
-                    "missing_line_end": last.line_index,
-                    "assumption": "unmatched_indices_assumed_tail",
-                    "window_start_sec": debug.get("window_start_sec"),
-                    "window_end_sec": debug.get("window_end_sec"),
-                    "threshold": debug.get("threshold"),
-                    "max_gap_ms": debug.get("max_gap_ms"),
-                    "initial_segment_count": debug.get("initial_segment_count"),
-                    "adjustment": debug.get("adjustment"),
-                }
-            ]
+    if len(intervals) > target_count:
         return [
             {
                 "line_start": first.line_index,
@@ -484,9 +435,12 @@ def _refine_repeated_run(
                 "status": "skipped",
                 "initial_segment_count": debug.get("initial_segment_count"),
                 "adjustment": debug.get("adjustment"),
-                "reason": "refuse_artificial_split",
+                "reason": "speech_count_exceeds_reference",
+                "expected_segment_count": target_count,
+                "detected_segment_count": len(intervals),
             }
         ]
+
     if not _balanced_repeated_intervals(intervals):
         return [
             {
@@ -499,19 +453,14 @@ def _refine_repeated_run(
             }
         ]
 
-    for alignment, (new_start, new_end) in zip(alignments[start:end], intervals):
-        alignment.raw_start_sec = round(new_start, 3)
-        alignment.raw_end_sec = round(new_end, 3)
-        alignment.start_sec = alignment.raw_start_sec
-        alignment.end_sec = alignment.raw_end_sec
-        alignment.flags.append("repeated_text_vad_refined")
-
     return [
         {
             "line_start": first.line_index,
             "line_end": last.line_index,
-            "status": "applied",
+            "status": "verified",
             "text": first.normalized_text,
+            "expected_segment_count": target_count,
+            "detected_segment_count": len(intervals),
             "window_start_sec": debug.get("window_start_sec"),
             "window_end_sec": debug.get("window_end_sec"),
             "threshold": debug.get("threshold"),
@@ -522,6 +471,144 @@ def _refine_repeated_run(
     ]
 
 
+def _reconcile_short_repeated_run(
+    alignments: list[LineAlignment],
+    start: int,
+    end: int,
+    intervals: list[tuple[float, float]],
+    debug: dict[str, object],
+) -> list[dict[str, object]]:
+    first = alignments[start]
+    last = alignments[end - 1]
+    if not intervals:
+        return [
+            {
+                "line_start": first.line_index,
+                "line_end": last.line_index,
+                "status": "skipped",
+                "reason": "no_detected_speech",
+                "expected_segment_count": end - start,
+                "detected_segment_count": 0,
+                "initial_segment_count": debug.get("initial_segment_count"),
+                "adjustment": debug.get("adjustment"),
+            }
+        ]
+
+    assignments = _assign_detected_intervals_to_lines(alignments[start:end], intervals)
+    assigned_by_local_index = {local_index: interval for local_index, interval in assignments}
+    missing_line_indices: list[int] = []
+
+    for local_index, alignment in enumerate(alignments[start:end]):
+        flags = alignment.flags
+        if local_index in assigned_by_local_index:
+            new_start, new_end = assigned_by_local_index[local_index]
+            alignment.raw_start_sec = round(new_start, 3)
+            alignment.raw_end_sec = round(new_end, 3)
+            alignment.start_sec = alignment.raw_start_sec
+            alignment.end_sec = alignment.raw_end_sec
+            flags.append("repeated_text_vad_reconciled")
+            flags.append("repeated_text_count_mismatch")
+            continue
+
+        alignment.raw_start_sec = None
+        alignment.raw_end_sec = None
+        alignment.start_sec = None
+        alignment.end_sec = None
+        flags.append(MISSING_AUDIO_FLAG)
+        flags.append("repeated_text_count_mismatch")
+        flags.append("unmatched_indices_vad_reconciled")
+        missing_line_indices.append(alignment.line_index)
+
+    return [
+        {
+            "line_start": first.line_index,
+            "line_end": last.line_index,
+            "status": "applied_missing_reconciled",
+            "text": first.normalized_text,
+            "expected_segment_count": end - start,
+            "detected_segment_count": len(intervals),
+            "assigned_line_indices": [alignments[start + local_index].line_index for local_index, _ in assignments],
+            "missing_line_indices": missing_line_indices,
+            "window_start_sec": debug.get("window_start_sec"),
+            "window_end_sec": debug.get("window_end_sec"),
+            "threshold": debug.get("threshold"),
+            "max_gap_ms": debug.get("max_gap_ms"),
+            "initial_segment_count": debug.get("initial_segment_count"),
+            "adjustment": debug.get("adjustment"),
+        }
+    ]
+
+
+def _assign_detected_intervals_to_lines(
+    repeated_alignments: list[LineAlignment],
+    intervals: list[tuple[float, float]],
+) -> list[tuple[int, tuple[float, float]]]:
+    line_count = len(repeated_alignments)
+    interval_count = len(intervals)
+    if interval_count > line_count:
+        return []
+
+    interval_durations = [max(0.001, end - start) for start, end in intervals]
+    sorted_durations = sorted(interval_durations)
+    scale = max(0.1, sorted_durations[len(sorted_durations) // 2])
+    scores = [
+        [_line_interval_assignment_score(line, interval, scale) for interval in intervals]
+        for line in repeated_alignments
+    ]
+
+    neg_inf = -1_000_000_000.0
+    dp = [[neg_inf] * (interval_count + 1) for _ in range(line_count + 1)]
+    take = [[False] * (interval_count + 1) for _ in range(line_count + 1)]
+    dp[0][0] = 0.0
+
+    for line_index in range(1, line_count + 1):
+        for interval_index in range(interval_count + 1):
+            dp[line_index][interval_index] = dp[line_index - 1][interval_index]
+            if interval_index == 0:
+                continue
+            assigned_score = dp[line_index - 1][interval_index - 1] + scores[line_index - 1][interval_index - 1]
+            if assigned_score > dp[line_index][interval_index]:
+                dp[line_index][interval_index] = assigned_score
+                take[line_index][interval_index] = True
+
+    assignments: list[tuple[int, tuple[float, float]]] = []
+    line_index = line_count
+    interval_index = interval_count
+    while line_index > 0 and interval_index > 0:
+        if take[line_index][interval_index]:
+            assignments.append((line_index - 1, intervals[interval_index - 1]))
+            line_index -= 1
+            interval_index -= 1
+        else:
+            line_index -= 1
+
+    assignments.reverse()
+    return assignments
+
+
+def _line_interval_assignment_score(
+    alignment: LineAlignment,
+    interval: tuple[float, float],
+    scale: float,
+) -> float:
+    line_start = alignment.raw_start_sec
+    line_end = alignment.raw_end_sec
+    if line_start is None or line_end is None or line_end <= line_start:
+        return -1000.0
+
+    interval_start, interval_end = interval
+    overlap_start = max(float(line_start), interval_start)
+    overlap_end = min(float(line_end), interval_end)
+    overlap = max(0.0, overlap_end - overlap_start)
+    overlap_denominator = max(0.001, min(float(line_end) - float(line_start), interval_end - interval_start))
+    overlap_score = overlap / overlap_denominator
+
+    line_center = (float(line_start) + float(line_end)) / 2
+    interval_center = (interval_start + interval_end) / 2
+    center_penalty = abs(line_center - interval_center) / scale
+    return overlap_score * 8.0 - center_penalty
+
+
 def _balanced_repeated_intervals(intervals: list[tuple[float, float]]) -> bool:
     if len(intervals) < 3:
         return True
@@ -530,19 +617,6 @@ def _balanced_repeated_intervals(intervals: list[tuple[float, float]]) -> bool:
     if median <= 0:
         return False
     return durations[-1] <= max(2.4, median * 2.4) and durations[0] >= max(0.12, median * 0.25)
-
-
-def _debug_intervals(value: object) -> list[tuple[float, float]]:
-    if not isinstance(value, list):
-        return []
-    intervals: list[tuple[float, float]] = []
-    for item in value:
-        if not isinstance(item, list | tuple) or len(item) != 2:
-            continue
-        start, end = item
-        if isinstance(start, (int, float)) and isinstance(end, (int, float)) and end > start:
-            intervals.append((float(start), float(end)))
-    return intervals
 
 
 def _is_missing_audio(alignment: LineAlignment) -> bool:
