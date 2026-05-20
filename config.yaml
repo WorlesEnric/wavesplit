@@ -1,0 +1,50 @@
+storage_dir: ./storage
+max_upload_mb: 1024
+job_retention_days: 7
+
+alignment:
+  engine: auto
+  model: storage/models/ctc_forced_aligner.onnx
+  language: en
+  ctc_language: eng
+  ctc_batch_size: 2
+  ctc_device: cuda
+  pre_padding_ms: 80
+  post_padding_ms: 120
+  vad_frame_ms: 10
+  min_active_ms: 80
+  min_silence_ms: 350
+  max_silence_ms: 1200
+
+qa:
+  enabled: true
+  asr_engine: faster_whisper
+  asr_model: storage/models/faster-whisper-tiny.en
+  device: cuda
+  compute_type: int8
+  similarity_pass: 92
+  similarity_review: 80
+  wer_pass: 0.25
+  wer_review: 0.50
+  leading_silence_review_ms: 800
+  trailing_silence_review_ms: 1000
+  aliases:
+    bleeker:
+      - bleaker
+      - bleeker.
+      - bleaker.
+
+worker:
+  queue_name: wavesplit
+  concurrency: 1
+  redis_url: redis://localhost:6379/0
+
+auth:
+  enabled: true
+  session_secret: TV8nLEDx8ORvB8ZkgA82YydtYkz4ICmiM7vqGzPWUhU
+  session_cookie: wavesplit_session
+  session_max_age_sec: 86400
+  cookie_secure: false
+  users:
+    - username: admin
+      password: "18182584842"

@@ -1,0 +1,17 @@
+[Unit]
+Description=WaveSplit FastAPI service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/wkspace/wavesplit
+Environment=WAVESPLIT_AUTH_COOKIE_SECURE=false
+Environment=LD_LIBRARY_PATH=/home/worlesenric/miniconda3/lib/python3.13/site-packages/nvidia/cudnn/lib:/home/worlesenric/miniconda3/lib/python3.13/site-packages/nvidia/cublas/lib:/home/worlesenric/miniconda3/lib/python3.13/site-packages/nvidia/cuda_nvrtc/lib:/usr/local/cuda/targets/x86_64-linux/lib
+Environment=PATH=/home/worlesenric/miniconda3/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/home/worlesenric/miniconda3/bin/uvicorn wavesplit.api:app --host 127.0.0.1 --port 8001
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

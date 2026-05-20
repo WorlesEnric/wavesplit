@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wavesplit"
+version = "0.1.0"
+description = "Order-preserving audio slicing tool for wav + line transcript jobs"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.109",
+  "uvicorn>=0.27",
+  "python-multipart>=0.0.7",
+  "pydantic>=2",
+  "PyYAML>=6",
+  "numpy>=1.26",
+  "pandas>=2.2",
+  "rapidfuzz>=3.0",
+  "jiwer>=4.0",
+  "redis>=5",
+  "rq>=2.0",
+  "faster-whisper>=1.2",
+  "ctc-forced-aligner>=1.0.2",
+  "Unidecode>=1.4",
+]
+
+[project.optional-dependencies]
+alignment = ["torch>=2.5", "torchaudio>=2.5"]
+dev = ["pytest>=8", "pytest-asyncio>=1"]
+
+[project.scripts]
+wavesplit = "wavesplit.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["wavesplit*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "model: tests that require model downloads or heavy ASR/alignment execution",
+]

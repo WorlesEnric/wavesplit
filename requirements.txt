@@ -1,0 +1,17 @@
+fastapi>=0.109
+uvicorn>=0.27
+python-multipart>=0.0.7
+pydantic>=2
+PyYAML>=6
+numpy>=1.26
+pandas>=2.2
+rapidfuzz>=3.0
+jiwer>=4.0
+redis>=5
+rq>=2.0
+faster-whisper>=1.2
+ctc-forced-aligner>=1.0.2
+Unidecode>=1.4
+torch>=2.5
+torchaudio>=2.5
+pytest>=8

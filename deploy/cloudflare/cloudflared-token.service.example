@@ -1,0 +1,14 @@
+[Unit]
+Description=Cloudflare Tunnel for WaveSplit
+After=network-online.target wavesplit.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment="HTTP_PROXY=" "HTTPS_PROXY=" "ALL_PROXY=" "http_proxy=" "https_proxy=" "all_proxy=" "NO_PROXY=*" "no_proxy=*"
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate run --token-file /etc/wavesplit/cloudflared.token
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
