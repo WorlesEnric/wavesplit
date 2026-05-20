@@ -87,9 +87,9 @@ def _align_with_ctc(
     if not ok or not srt_path.exists():
         raise AlignmentError("CTC aligner did not produce an SRT file.")
 
-    entries = _parse_srt(srt_path)
-    if len(entries) != len(lines):
-        raise AlignmentError(f"CTC aligner produced {len(entries)} line timestamps for {len(lines)} transcript lines.")
+    srt_entries = _parse_srt(srt_path)
+    word_timestamps = list(aligner.word_timestamps or [])
+    entries = _line_entries_from_word_timestamps(word_timestamps, lines)
 
     alignments: list[LineAlignment] = []
     for line, entry in zip(lines, entries):
@@ -106,7 +106,7 @@ def _align_with_ctc(
                 raw_end_sec=round(float(entry["end"]), 3),
                 start_sec=round(float(entry["start"]), 3),
                 end_sec=round(float(entry["end"]), 3),
-                alignment_score_mean=_line_score(aligner.word_timestamps or [], line.token_start_index, line.token_end_index),
+                alignment_score_mean=_line_score(word_timestamps, line.token_start_index, line.token_end_index),
                 flags=flags,
             )
         )
@@ -139,12 +139,14 @@ def _align_with_ctc(
         "batch_size": config.alignment.ctc_batch_size,
         "device": device,
         "providers": aligner.alignment_model.get_providers(),
-        "word_timestamp_count": len(aligner.word_timestamps or []),
+        "word_timestamp_count": len(word_timestamps),
         "line_timestamp_count": len(entries),
+        "srt_line_timestamp_count": len(srt_entries),
+        "line_timestamp_source": "word_timestamps",
         "segments": [[item.raw_start_sec, item.raw_end_sec] for item in alignments],
         "silence_split_points": split_points,
         "repeated_text_refinements": repeated_refinements,
-        "word_timestamps": aligner.word_timestamps or [],
+        "word_timestamps": word_timestamps,
     }
     (Path(alignment_dir) / "raw_alignment.json").write_text(
         json.dumps(raw_debug, ensure_ascii=False, indent=2),
@@ -278,6 +280,43 @@ def _parse_srt(path: str | Path) -> list[dict[str, object]]:
     return entries
 
 
+def _line_entries_from_word_timestamps(
+    word_timestamps: list[dict[str, object]],
+    lines: list[LineRecord],
+) -> list[dict[str, object]]:
+    expected_word_count = sum(len(line.tokens) for line in lines)
+    if len(word_timestamps) != expected_word_count:
+        raise AlignmentError(
+            f"CTC aligner produced {len(word_timestamps)} word timestamps for "
+            f"{expected_word_count} transcript tokens."
+        )
+
+    entries: list[dict[str, object]] = []
+    cursor = 0
+    for line in lines:
+        token_count = len(line.tokens)
+        span = word_timestamps[cursor : cursor + token_count]
+        cursor += token_count
+        if not span:
+            raise AlignmentError(f"Transcript line {line.line_index} has no CTC word timestamps.")
+        entries.append(
+            {
+                "index": line.line_index,
+                "start": _word_timestamp_time(span[0], "start", line.line_index),
+                "end": _word_timestamp_time(span[-1], "end", line.line_index),
+                "text": " ".join(str(word.get("text", "")).strip() for word in span).strip(),
+            }
+        )
+    return entries
+
+
+def _word_timestamp_time(word: dict[str, object], key: str, line_index: int) -> float:
+    value = word.get(key)
+    if not isinstance(value, (int, float)):
+        raise AlignmentError(f"CTC word timestamp for line {line_index} is missing numeric '{key}'.")
+    return float(value)
+
+
 def _line_score(word_timestamps: list[dict[str, object]], start_index: int, end_index: int) -> float | None:
     scores = []
     for word in word_timestamps[start_index:end_index]:
@@ -345,15 +384,17 @@ def _refine_repeated_run(
     if window_end <= window_start:
         return []
 
+    target_count = end - start
     try:
         intervals, debug = detect_speech_intervals_in_window(
             audio_path,
-            target_count=end - start,
+            target_count=target_count,
             audio_duration_sec=audio_duration_sec,
             config=config.alignment,
             start_sec=window_start,
             end_sec=window_end,
             prefer_balanced=True,
+            adjust_to_target=False,
         )
     except Exception as exc:
         return [
@@ -365,7 +406,29 @@ def _refine_repeated_run(
             }
         ]
 
-    if len(intervals) != end - start:
+    if len(intervals) != target_count:
+        try:
+            intervals, debug = detect_speech_intervals_in_window(
+                audio_path,
+                target_count=target_count,
+                audio_duration_sec=audio_duration_sec,
+                config=config.alignment,
+                start_sec=window_start,
+                end_sec=window_end,
+                prefer_balanced=True,
+                adjust_to_target=True,
+            )
+        except Exception as exc:
+            return [
+                {
+                    "line_start": first.line_index,
+                    "line_end": last.line_index,
+                    "status": "failed",
+                    "reason": str(exc),
+                }
+            ]
+
+    if len(intervals) != target_count:
         return [
             {
                 "line_start": first.line_index,

@@ -1,6 +1,10 @@
-from wavesplit.alignment import _refine_repeated_run
+import pytest
+
+from wavesplit.alignment import _line_entries_from_word_timestamps, _refine_repeated_run
 from wavesplit.config import AppConfig
+from wavesplit.errors import AlignmentError
 from wavesplit.models import LineAlignment
+from wavesplit.text import build_line_manifest
 
 
 def _repeated_alignments() -> list[LineAlignment]:
@@ -67,3 +71,65 @@ def test_repeated_vad_refinement_marks_unmatched_tail_when_speech_count_is_short
     assert alignments[2].start_sec is None
     assert "missing_audio_segment" in alignments[2].flags
     assert "unmatched_indices_assumed_tail" in alignments[2].flags
+
+
+def test_repeated_vad_refinement_prefers_natural_exact_count(monkeypatch):
+    calls: list[bool] = []
+
+    def fake_detect(*args, **kwargs):
+        adjust_to_target = kwargs["adjust_to_target"]
+        calls.append(adjust_to_target)
+        if not adjust_to_target:
+            return (
+                [(1.0, 1.7), (3.0, 3.7), (5.0, 5.7)],
+                {"initial_segment_count": 3, "adjustment": "none", "adjust_to_target": False},
+            )
+        return (
+            [(1.0, 1.35), (1.35, 1.7), (3.0, 3.7)],
+            {"initial_segment_count": 2, "adjustment": "split", "adjust_to_target": True},
+        )
+
+    monkeypatch.setattr("wavesplit.alignment.detect_speech_intervals_in_window", fake_detect)
+    alignments = _repeated_alignments()
+
+    refinements = _refine_repeated_run(
+        alignments,
+        0,
+        3,
+        audio_path="unused.wav",
+        audio_duration_sec=8.0,
+        config=AppConfig(),
+    )
+
+    assert calls == [False]
+    assert refinements[0]["status"] == "applied"
+    assert [item.raw_start_sec for item in alignments] == [1.0, 3.0, 5.0]
+    assert all("missing_audio_segment" not in item.flags for item in alignments)
+
+
+def test_ctc_line_entries_are_grouped_by_transcript_token_counts():
+    lines = build_line_manifest(["Take a Photo", "Start Recording"])
+    word_timestamps = [
+        {"text": "Take", "start": 1.0, "end": 1.2, "score": -0.1},
+        {"text": "a", "start": 1.2, "end": 1.3, "score": -0.1},
+        {"text": "Photo", "start": 1.3, "end": 1.7, "score": -0.1},
+        {"text": "Start", "start": 2.0, "end": 2.3, "score": -0.1},
+        {"text": "Recording", "start": 2.3, "end": 2.9, "score": -0.1},
+    ]
+
+    entries = _line_entries_from_word_timestamps(word_timestamps, lines)
+
+    assert entries == [
+        {"index": 1, "start": 1.0, "end": 1.7, "text": "Take a Photo"},
+        {"index": 2, "start": 2.0, "end": 2.9, "text": "Start Recording"},
+    ]
+
+
+def test_ctc_line_entries_reject_word_count_mismatch():
+    lines = build_line_manifest(["Start Recording"])
+
+    with pytest.raises(AlignmentError, match="1 word timestamps for 2 transcript tokens"):
+        _line_entries_from_word_timestamps(
+            [{"text": "Start", "start": 1.0, "end": 1.3}],
+            lines,
+        )
