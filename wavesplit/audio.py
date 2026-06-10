@@ -326,6 +326,71 @@ def detect_speech_intervals_in_window(
     return [(start + start_sec, end + start_sec) for start, end in intervals], debug
 
 
+def detect_voice_intervals(
+    path: str | Path,
+    *,
+    audio_duration_sec: float,
+    config: AlignmentConfig,
+) -> tuple[list[tuple[float, float]], dict[str, Any]]:
+    samples, sample_rate = load_audio_samples(path, sample_rate=16000)
+    return _detect_voice_intervals_from_samples(
+        samples,
+        sample_rate,
+        audio_duration_sec=audio_duration_sec,
+        config=config,
+    )
+
+
+def _voice_activity_threshold(rms: np.ndarray) -> float:
+    noise_floor = float(np.percentile(rms, 20))
+    speech_level = float(np.percentile(rms, 95))
+    adaptive = noise_floor + (speech_level - noise_floor) * 0.25
+    return max(0.004, min(0.026, adaptive))
+
+
+def _detect_voice_intervals_from_samples(
+    samples: np.ndarray,
+    sample_rate: int,
+    *,
+    audio_duration_sec: float,
+    config: AlignmentConfig,
+) -> tuple[list[tuple[float, float]], dict[str, Any]]:
+    frame_size = max(1, int(sample_rate * config.vad_frame_ms / 1000))
+    usable = samples[: len(samples) // frame_size * frame_size]
+    if len(usable) == 0:
+        raise InputValidationError("Audio file contains no usable samples.")
+    frames = usable.reshape(-1, frame_size)
+    rms = np.sqrt(np.mean(frames * frames, axis=1))
+    frame_sec = frame_size / sample_rate
+    threshold = _voice_activity_threshold(rms)
+    max_gap_ms = config.min_silence_ms
+    max_gap_frames = max(1, int(max_gap_ms / config.vad_frame_ms))
+    min_active_frames = max(1, int(config.min_active_ms / config.vad_frame_ms))
+    active = _postprocess_active(
+        rms > threshold,
+        max_gap_frames=max_gap_frames,
+        min_active_frames=min_active_frames,
+    )
+    intervals = _intervals_from_active(active, frame_sec)
+    clamped = [(max(0.0, start), min(audio_duration_sec, end)) for start, end in intervals]
+    debug = {
+        "engine": "energy_voice_intervals",
+        "threshold": threshold,
+        "max_gap_ms": max_gap_ms,
+        "frame_ms": config.vad_frame_ms,
+        "min_active_ms": config.min_active_ms,
+        "initial_segment_count": len(intervals),
+        "initial_intervals": [[round(start, 3), round(end, 3)] for start, end in intervals],
+        "rms_percentiles": {
+            "p05": float(np.percentile(rms, 5)),
+            "p20": float(np.percentile(rms, 20)),
+            "p50": float(np.percentile(rms, 50)),
+            "p95": float(np.percentile(rms, 95)),
+        },
+    }
+    return clamped, debug
+
+
 def _detect_speech_intervals_from_samples(
     samples: np.ndarray,
     sample_rate: int,

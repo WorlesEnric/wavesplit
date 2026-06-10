@@ -24,7 +24,14 @@ const ERROR_MESSAGES: Record<string, string> = {
   "QA report is not ready.": "质检报告尚未生成。",
   "Clip id not found.": "音频片段不存在。",
   "Invalid clip path.": "音频片段路径无效。",
-  "Clip file is missing.": "音频片段文件缺失。"
+  "Clip file is missing.": "音频片段文件缺失。",
+  "Audio file cannot be decoded by ffmpeg.": "音频文件无法解码。",
+  "Audio duration must be greater than zero.": "音频时长必须大于 0。",
+  "Audio file contains no usable samples.": "音频文件没有可用采样。",
+  "Please provide reference text.": "请输入参考文本。",
+  "Please upload at least one .wav audio file.": "请至少上传一个 .wav 音频文件。",
+  "Please upload only .wav audio files.": "请只上传 .wav 音频文件。",
+  "WAV filename must contain reference text.": "WAV 文件名必须包含参考文本。"
 };
 
 function errorMessage(payload: { detail?: unknown } | null, fallback: string) {
@@ -165,6 +172,45 @@ export async function getReport(jobId: string): Promise<JobReport> {
   const response = await fetch(`/api/jobs/${jobId}/report`);
   if (!response.ok) throw new Error("报告尚未生成");
   return response.json();
+}
+
+function downloadFilename(response: Response, fallback: string) {
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const match = disposition.match(/filename="?([^";]+)"?/i);
+  return match?.[1] ?? fallback;
+}
+
+export async function createTimestampTxt(audio: File, referenceText: string): Promise<{ text: string; blob: Blob; filename: string; segmentCount: number }> {
+  const body = new FormData();
+  body.append("audio", audio);
+  body.append("reference_text", referenceText);
+  const response = await fetch("/api/timestamps", { method: "POST", body });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    throw new Error(errorMessage(payload, "生成时间戳失败"));
+  }
+  const text = await response.text();
+  return {
+    text,
+    blob: new Blob([text], { type: "text/plain;charset=utf-8" }),
+    filename: downloadFilename(response, "timestamps.txt"),
+    segmentCount: Number(response.headers.get("X-WaveSplit-Segment-Count") ?? 0)
+  };
+}
+
+export async function createBatchTimestampZip(files: File[]): Promise<{ blob: Blob; filename: string; fileCount: number }> {
+  const body = new FormData();
+  files.forEach((file) => body.append("audios", file));
+  const response = await fetch("/api/timestamps/batch", { method: "POST", body });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    throw new Error(errorMessage(payload, "批量生成时间戳失败"));
+  }
+  return {
+    blob: await response.blob(),
+    filename: downloadFilename(response, "timestamps.zip"),
+    fileCount: Number(response.headers.get("X-WaveSplit-File-Count") ?? 0)
+  };
 }
 
 export function artifactUrl(jobId: string, artifact: "download" | "manifest.csv" | "qa_report.csv" | "diagnostics.zip") {

@@ -1,4 +1,4 @@
-import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -9,11 +9,13 @@ import {
   LockKeyhole,
   Loader2,
   LogOut,
+  Pause,
+  Play,
   Search,
   UploadCloud,
   XCircle
 } from "lucide-react";
-import { artifactUrl, clipUrl, createJob, getAuthSession, getJob, getReport, login, logout } from "./api";
+import { artifactUrl, clipUrl, createBatchTimestampZip, createJob, createTimestampTxt, getAuthSession, getJob, getReport, login, logout } from "./api";
 import type { AuthSession, ClipRecord, JobReport, JobStatus, QAStatus } from "./types";
 
 const stages = [
@@ -73,6 +75,33 @@ function formatStatusMessage(message: string | null | undefined) {
   const unexpected = message.match(/^Unexpected error: (.*)$/);
   if (unexpected) return `意外错误：${unexpected[1]}`;
   return statusMessages[message] ?? message;
+}
+
+interface TimestampSegment {
+  index: number;
+  line: string;
+  start_sec: number;
+  end_sec: number;
+}
+
+function parseTimestampSegments(text: string): TimestampSegment[] {
+  return text
+    .split(/\r?\n/)
+    .map((line, index) => {
+      const [start, end] = line.trim().split(/\s+/).map(Number);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+      return {
+        index: index + 1,
+        line: `${start.toFixed(3)} ${end.toFixed(3)}`,
+        start_sec: start,
+        end_sec: end
+      };
+    })
+    .filter((segment): segment is TimestampSegment => Boolean(segment));
+}
+
+function referenceFromFilename(filename: string) {
+  return filename.replace(/\.[^/.]+$/, "");
 }
 
 function statusIcon(status: string) {
@@ -142,10 +171,36 @@ export default function App() {
   const [error, setError] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [timestampAudio, setTimestampAudio] = useState<File | null>(null);
+  const [timestampReference, setTimestampReference] = useState("");
+  const [timestamping, setTimestamping] = useState(false);
+  const [timestampError, setTimestampError] = useState("");
+  const [timestampDownloadUrl, setTimestampDownloadUrl] = useState("");
+  const [timestampFilename, setTimestampFilename] = useState("timestamps.txt");
+  const [timestampSegments, setTimestampSegments] = useState<TimestampSegment[]>([]);
+  const [timestampCount, setTimestampCount] = useState<number | null>(null);
+  const [timestampAudioUrl, setTimestampAudioUrl] = useState("");
+  const [selectedTimestampIndex, setSelectedTimestampIndex] = useState<number | null>(null);
+  const [timestampPlaying, setTimestampPlaying] = useState(false);
+  const [batchTimestampFiles, setBatchTimestampFiles] = useState<File[]>([]);
+  const [batchTimestamping, setBatchTimestamping] = useState(false);
+  const [batchTimestampError, setBatchTimestampError] = useState("");
+  const [batchTimestampDownloadUrl, setBatchTimestampDownloadUrl] = useState("");
+  const [batchTimestampFilename, setBatchTimestampFilename] = useState("timestamps.zip");
+  const [batchTimestampCount, setBatchTimestampCount] = useState<number | null>(null);
+  const timestampAudioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     getAuthSession().then(setAuth).catch(() => setAuth({ authenticated: false, username: null }));
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (timestampDownloadUrl) URL.revokeObjectURL(timestampDownloadUrl);
+      if (timestampAudioUrl) URL.revokeObjectURL(timestampAudioUrl);
+      if (batchTimestampDownloadUrl) URL.revokeObjectURL(batchTimestampDownloadUrl);
+    };
+  }, [timestampDownloadUrl, timestampAudioUrl, batchTimestampDownloadUrl]);
 
   useEffect(() => {
     if (!jobId || !auth?.authenticated) return;
@@ -201,6 +256,60 @@ export default function App() {
       .sort((a, b) => (sort === "line" ? a.line_index - b.line_index : a.confidence - b.confidence));
   }, [filter, query, report?.clips, sort]);
 
+  const selectedTimestampSegment =
+    selectedTimestampIndex === null ? null : timestampSegments[selectedTimestampIndex] ?? null;
+
+  function clearTimestampPreview() {
+    setTimestampDownloadUrl("");
+    setTimestampAudioUrl("");
+    setTimestampSegments([]);
+    setTimestampCount(null);
+    setSelectedTimestampIndex(null);
+    setTimestampPlaying(false);
+  }
+
+  function clearBatchTimestampResult() {
+    setBatchTimestampDownloadUrl("");
+    setBatchTimestampCount(null);
+  }
+
+  async function playTimestampSegment(segment: TimestampSegment, index: number) {
+    const player = timestampAudioRef.current;
+    if (!player || !timestampAudioUrl) return;
+    setSelectedTimestampIndex(index);
+    player.currentTime = segment.start_sec;
+    try {
+      await player.play();
+      setTimestampPlaying(true);
+    } catch {
+      setTimestampPlaying(false);
+    }
+  }
+
+  function pauseTimestampSegment() {
+    timestampAudioRef.current?.pause();
+    setTimestampPlaying(false);
+  }
+
+  function handleTimestampTimeUpdate() {
+    const player = timestampAudioRef.current;
+    if (!player || !selectedTimestampSegment) return;
+    if (player.currentTime >= selectedTimestampSegment.end_sec) {
+      player.pause();
+      player.currentTime = selectedTimestampSegment.end_sec;
+      setTimestampPlaying(false);
+    }
+  }
+
+  function handleTimestampPlay() {
+    const player = timestampAudioRef.current;
+    if (!player || !selectedTimestampSegment) return;
+    if (player.currentTime < selectedTimestampSegment.start_sec || player.currentTime >= selectedTimestampSegment.end_sec) {
+      player.currentTime = selectedTimestampSegment.start_sec;
+    }
+    setTimestampPlaying(true);
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!audio || !transcript) return;
@@ -220,10 +329,63 @@ export default function App() {
     }
   }
 
+  async function submitTimestamps(event: FormEvent) {
+    event.preventDefault();
+    if (!timestampAudio || !timestampReference.trim()) return;
+    setTimestamping(true);
+    setTimestampError("");
+    clearTimestampPreview();
+    try {
+      const result = await createTimestampTxt(timestampAudio, timestampReference);
+      const segments = parseTimestampSegments(result.text);
+      setTimestampFilename(result.filename);
+      setTimestampSegments(segments);
+      setTimestampCount(result.segmentCount || segments.length);
+      setSelectedTimestampIndex(segments.length ? 0 : null);
+      setTimestampDownloadUrl(URL.createObjectURL(result.blob));
+      setTimestampAudioUrl(URL.createObjectURL(timestampAudio));
+    } catch (err) {
+      setTimestampError(err instanceof Error ? err.message : "生成时间戳失败");
+    } finally {
+      setTimestamping(false);
+    }
+  }
+
+  async function submitBatchTimestamps(event: FormEvent) {
+    event.preventDefault();
+    if (!batchTimestampFiles.length) return;
+    setBatchTimestamping(true);
+    setBatchTimestampError("");
+    clearBatchTimestampResult();
+    try {
+      const result = await createBatchTimestampZip(batchTimestampFiles);
+      setBatchTimestampFilename(result.filename);
+      setBatchTimestampCount(result.fileCount || batchTimestampFiles.length);
+      setBatchTimestampDownloadUrl(URL.createObjectURL(result.blob));
+    } catch (err) {
+      setBatchTimestampError(err instanceof Error ? err.message : "批量生成时间戳失败");
+    } finally {
+      setBatchTimestamping(false);
+    }
+  }
+
   function chooseFile(kind: "audio" | "transcript", event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0] ?? null;
     if (kind === "audio") setAudio(file);
     else setTranscript(file);
+  }
+
+  function chooseTimestampFile(event: ChangeEvent<HTMLInputElement>) {
+    setTimestampAudio(event.target.files?.[0] ?? null);
+    setTimestampError("");
+    clearTimestampPreview();
+  }
+
+  function chooseBatchTimestampFiles(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []).filter((file) => file.name.toLowerCase().endsWith(".wav"));
+    setBatchTimestampFiles(files);
+    setBatchTimestampError("");
+    clearBatchTimestampResult();
   }
 
   async function signOut() {
@@ -298,6 +460,141 @@ export default function App() {
                 <span>{uploading ? `上传中 ${Math.round(uploadProgress * 100)}%` : "开始任务"}</span>
               </button>
               {error && <p className="errorText">{error}</p>}
+            </div>
+          </form>
+        </section>
+
+        <section className="panel timestampPanel">
+          <form onSubmit={submitTimestamps}>
+            <div className="panelHeader">
+              <div>
+                <h2>语音时间戳</h2>
+                <p>WAV 到 TXT</p>
+              </div>
+              {timestampCount !== null && <strong>{timestampCount} 段</strong>}
+            </div>
+            <div className="timestampGrid">
+              <label className="fileDrop">
+                <FileAudio aria-hidden="true" />
+                <span>WAV 音频</span>
+                <strong>{timestampAudio?.name ?? "选择文件"}</strong>
+                <input type="file" accept=".wav,audio/wav" onChange={chooseTimestampFile} />
+              </label>
+              <label className="timestampTextBox">
+                <span>参考文本</span>
+                <textarea value={timestampReference} onChange={(event) => setTimestampReference(event.target.value)} />
+              </label>
+              <div className="timestampPreviewBox">
+                <span>TXT 预览</span>
+                {timestampSegments.length ? (
+                  <div className="timestampLineList">
+                    {timestampSegments.map((segment, index) => (
+                      <button
+                        className={`timestampLine ${selectedTimestampIndex === index ? "selected" : ""}`}
+                        key={`${segment.line}-${segment.index}`}
+                        onClick={() => playTimestampSegment(segment, index)}
+                        title={`试听第 ${segment.index} 段`}
+                        type="button"
+                      >
+                        {timestampPlaying && selectedTimestampIndex === index ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}
+                        <code>{segment.line}</code>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="emptyTimestamp">暂无结果</div>
+                )}
+              </div>
+            </div>
+            {timestampAudioUrl && selectedTimestampSegment && (
+              <div className="timestampPlayerWindow">
+                <div className="previewTitle">
+                  <strong>第 {selectedTimestampSegment.index} 段</strong>
+                  <code>{selectedTimestampSegment.line}</code>
+                </div>
+                <audio
+                  controls
+                  onPause={() => setTimestampPlaying(false)}
+                  onPlay={handleTimestampPlay}
+                  onTimeUpdate={handleTimestampTimeUpdate}
+                  ref={timestampAudioRef}
+                  src={timestampAudioUrl}
+                />
+                <div className="timestampPlayerActions">
+                  <button className="iconButton" onClick={() => playTimestampSegment(selectedTimestampSegment, selectedTimestampIndex ?? 0)} type="button">
+                    <Play aria-hidden="true" />
+                    <span>试听</span>
+                  </button>
+                  <button className="iconButton" onClick={pauseTimestampSegment} type="button">
+                    <Pause aria-hidden="true" />
+                    <span>暂停</span>
+                  </button>
+                </div>
+              </div>
+            )}
+            <div className="uploadActions">
+              <button className="primaryButton" type="submit" disabled={!timestampAudio || !timestampReference.trim() || timestamping}>
+                {timestamping ? <Loader2 aria-hidden="true" /> : <UploadCloud aria-hidden="true" />}
+                <span>{timestamping ? "处理中" : "生成 TXT"}</span>
+              </button>
+              {timestampDownloadUrl && (
+                <a className="iconButton" href={timestampDownloadUrl} download={timestampFilename}>
+                  <Download aria-hidden="true" />
+                  <span>下载 TXT</span>
+                </a>
+              )}
+              {timestampError && <p className="errorText">{timestampError}</p>}
+            </div>
+          </form>
+        </section>
+
+        <section className="panel batchTimestampPanel">
+          <form onSubmit={submitBatchTimestamps}>
+            <div className="panelHeader">
+              <div>
+                <h2>批量时间戳</h2>
+                <p>文件名作为参考文本</p>
+              </div>
+              {batchTimestampCount !== null && <strong>{batchTimestampCount} 个</strong>}
+            </div>
+            <div className="batchTimestampGrid">
+              <label className="fileDrop">
+                <FileAudio aria-hidden="true" />
+                <span>WAV 音频</span>
+                <strong>{batchTimestampFiles.length ? `${batchTimestampFiles.length} 个文件` : "选择文件"}</strong>
+                <input multiple type="file" accept=".wav,audio/wav" onChange={chooseBatchTimestampFiles} />
+              </label>
+              <div className="batchFileList">
+                <span>待处理</span>
+                {batchTimestampFiles.length ? (
+                  <div>
+                    {batchTimestampFiles.map((file) => (
+                      <div className="batchFileItem" key={`${file.name}-${file.size}`}>
+                        <FileText aria-hidden="true" />
+                        <div>
+                          <strong>{file.name}</strong>
+                          <small>{referenceFromFilename(file.name)}</small>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="emptyTimestamp">暂无文件</div>
+                )}
+              </div>
+            </div>
+            <div className="uploadActions">
+              <button className="primaryButton" type="submit" disabled={!batchTimestampFiles.length || batchTimestamping}>
+                {batchTimestamping ? <Loader2 aria-hidden="true" /> : <UploadCloud aria-hidden="true" />}
+                <span>{batchTimestamping ? "处理中" : "生成 ZIP"}</span>
+              </button>
+              {batchTimestampDownloadUrl && (
+                <a className="iconButton" href={batchTimestampDownloadUrl} download={batchTimestampFilename}>
+                  <Download aria-hidden="true" />
+                  <span>下载 ZIP</span>
+                </a>
+              )}
+              {batchTimestampError && <p className="errorText">{batchTimestampError}</p>}
             </div>
           </form>
         </section>

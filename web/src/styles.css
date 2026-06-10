@@ -18,7 +18,8 @@ body {
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -196,6 +197,191 @@ a {
   margin-top: 16px;
   justify-content: space-between;
   flex-wrap: wrap;
+}
+
+.timestampPanel form,
+.batchTimestampPanel form {
+  display: grid;
+  gap: 16px;
+}
+
+.timestampGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.2fr) minmax(280px, 0.8fr);
+  gap: 16px;
+}
+
+.batchTimestampGrid {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.45fr) minmax(0, 1fr);
+  gap: 16px;
+}
+
+.timestampTextBox {
+  min-height: 116px;
+  border: 1px solid #dedbd3;
+  border-radius: 8px;
+  padding: 14px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 8px;
+  background: #ffffff;
+}
+
+.timestampTextBox span {
+  color: #6d716b;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.timestampTextBox textarea {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  border: 1px solid #c7c3b8;
+  border-radius: 8px;
+  padding: 9px 10px;
+  outline: 0;
+}
+
+.timestampTextBox textarea:focus {
+  border-color: #2f6f62;
+  box-shadow: 0 0 0 3px #dcece7;
+}
+
+.timestampPreviewBox {
+  min-height: 116px;
+  border: 1px solid #dedbd3;
+  border-radius: 8px;
+  padding: 14px;
+  background: #fbfaf7;
+}
+
+.timestampPreviewBox span {
+  color: #6d716b;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.timestampLineList {
+  margin-top: 8px;
+  max-height: 220px;
+  overflow: auto;
+  display: grid;
+  gap: 6px;
+}
+
+.timestampLine {
+  min-height: 34px;
+  width: 100%;
+  border: 1px solid #dedbd3;
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  background: #ffffff;
+  color: #202321;
+  cursor: pointer;
+  text-align: left;
+}
+
+.timestampLine:hover,
+.timestampLine.selected {
+  border-color: #9fc7bb;
+  background: #edf7f3;
+}
+
+.timestampLine svg {
+  width: 16px;
+  height: 16px;
+  color: #2f6f62;
+}
+
+.timestampLine code,
+.timestampPlayerWindow code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.timestampPlayerWindow {
+  border: 1px solid #dedbd3;
+  border-radius: 8px;
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+  background: #fbfaf7;
+}
+
+.timestampPlayerWindow audio {
+  width: 100%;
+}
+
+.timestampPlayerActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.batchFileList {
+  min-height: 116px;
+  border: 1px solid #dedbd3;
+  border-radius: 8px;
+  padding: 14px;
+  background: #fbfaf7;
+}
+
+.batchFileList > span {
+  color: #6d716b;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.batchFileList > div {
+  margin-top: 8px;
+  max-height: 220px;
+  overflow: auto;
+  display: grid;
+  gap: 8px;
+}
+
+.batchFileItem {
+  min-height: 46px;
+  border: 1px solid #dedbd3;
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  background: #ffffff;
+}
+
+.batchFileItem svg {
+  width: 18px;
+  height: 18px;
+  color: #2f6f62;
+}
+
+.batchFileItem strong,
+.batchFileItem small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.batchFileItem small {
+  margin-top: 2px;
+  color: #6d716b;
+}
+
+.emptyTimestamp {
+  min-height: 74px;
+  display: grid;
+  place-items: center;
+  color: #6d716b;
 }
 
 .primaryButton,
@@ -555,6 +741,8 @@ tbody tr:hover,
   }
 
   .uploadGrid,
+  .timestampGrid,
+  .batchTimestampGrid,
   .stageGrid,
   .summaryGrid {
     grid-template-columns: 1fr;

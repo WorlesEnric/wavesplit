@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import shutil
 import subprocess
 import threading
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -16,10 +18,12 @@ from pydantic import BaseModel
 
 from .auth import configured_user, create_session_token, password_matches, username_from_request
 from .config import AppConfig, load_config
+from .errors import WaveSplitError
 from .packaging import build_diagnostics_zip
 from .pipeline import run_pipeline
 from .status import JobStatusStore
 from .storage import create_job_layout, job_dir_for, make_job_id, validate_job_id
+from .timestamps import generate_timestamp_payload
 
 
 CHUNK_UPLOAD_MAX_BYTES = 32 * 1024 * 1024
@@ -132,6 +136,70 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         JobStatusStore(paths.status_path).initialize(job_id, audio.filename, transcript.filename)
         _enqueue_or_run_local(config, job_id)
         return {"job_id": job_id, "state": "queued"}
+
+    @app.post("/api/timestamps")
+    async def create_timestamps(reference_text: str = Form(...), audio: UploadFile = File(...)) -> Response:
+        if not audio.filename or not audio.filename.lower().endswith(".wav"):
+            raise HTTPException(status_code=400, detail="Please upload a .wav audio file.")
+        if not reference_text.strip():
+            raise HTTPException(status_code=400, detail="Please provide reference text.")
+
+        request_id = make_job_id()
+        root = Path(config.storage_dir) / "timestamps" / request_id
+        audio_path = root / "original.wav"
+        try:
+            await _save_upload(audio, audio_path, config.max_upload_mb * 1024 * 1024)
+            payload = generate_timestamp_payload(audio_path, reference_text=reference_text, config=config)
+        except WaveSplitError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        headers = {
+            "Content-Disposition": 'attachment; filename="timestamps.txt"',
+            "X-WaveSplit-Segment-Count": str(payload["summary"]["total"]),
+        }
+        return Response(content=str(payload["text"]), media_type="text/plain; charset=utf-8", headers=headers)
+
+    @app.post("/api/timestamps/batch")
+    async def create_batch_timestamps(audios: list[UploadFile] = File(...)) -> Response:
+        if not audios:
+            raise HTTPException(status_code=400, detail="Please upload at least one .wav audio file.")
+
+        request_id = make_job_id()
+        root = Path(config.storage_dir) / "timestamps" / request_id
+        max_bytes = config.max_upload_mb * 1024 * 1024
+        used_names: set[str] = set()
+        output = io.BytesIO()
+        processed = 0
+        try:
+            with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for index, audio in enumerate(audios, start=1):
+                    filename = _upload_basename(audio.filename or "")
+                    if not filename.lower().endswith(".wav"):
+                        raise HTTPException(status_code=400, detail="Please upload only .wav audio files.")
+                    reference_text = Path(filename).stem.strip()
+                    if not reference_text:
+                        raise HTTPException(status_code=400, detail="WAV filename must contain reference text.")
+
+                    audio_path = root / f"{index:06d}.wav"
+                    await _save_upload(audio, audio_path, max_bytes)
+                    payload = generate_timestamp_payload(audio_path, reference_text=reference_text, config=config)
+                    archive.writestr(_unique_timestamp_txt_name(filename, used_names), str(payload["text"]))
+                    processed += 1
+        except HTTPException:
+            raise
+        except WaveSplitError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        headers = {
+            "Content-Disposition": 'attachment; filename="timestamps.zip"',
+            "X-WaveSplit-File-Count": str(processed),
+        }
+        return Response(content=output.getvalue(), media_type="application/zip", headers=headers)
+
 
     @app.post("/api/uploads")
     def init_chunked_upload(payload: ChunkedUploadInitRequest) -> dict[str, str]:
@@ -295,6 +363,21 @@ async def _save_upload(upload: UploadFile, target: Path, max_bytes: int) -> None
                 target.unlink(missing_ok=True)
                 raise HTTPException(status_code=413, detail="Uploaded file exceeds the configured size limit.")
             fh.write(chunk)
+
+
+def _upload_basename(filename: str) -> str:
+    return Path(filename.replace("\\", "/")).name
+
+
+def _unique_timestamp_txt_name(filename: str, used_names: set[str]) -> str:
+    stem = Path(_upload_basename(filename)).stem.strip() or "timestamps"
+    candidate = f"{stem}.txt"
+    suffix = 2
+    while candidate in used_names:
+        candidate = f"{stem}-{suffix}.txt"
+        suffix += 1
+    used_names.add(candidate)
+    return candidate
 
 
 def _upload_dir_for(config: AppConfig, upload_id: str) -> Path:
