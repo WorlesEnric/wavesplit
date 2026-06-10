@@ -1,0 +1,34 @@
+# Alignment worker (queue: align-audio). Build from the wavesplit repo root:
+#   docker build -f workers/Dockerfile.alignment -t wavesplit-alignment-worker .
+# Run (own, heavier host — torch/onnxruntime/ctc_forced_aligner):
+#   docker run --rm \
+#     -e GATEWAY_URL=http://gateway:4500 \
+#     -e WORKER_BEARER=<align-audio service-account token> \
+#     -e QUEUE=align-audio \
+#     -e WAVESPLIT_ALIGNMENT_ENGINE=auto \
+#     -v $PWD/storage/models:/app/storage/models \
+#     wavesplit-alignment-worker
+FROM python:3.11-slim
+
+# ffmpeg/ffprobe are required at runtime (wavesplit.audio shells out to them).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install ONLY the alignment deps (torch/torchaudio/onnxruntime/ctc-forced-aligner).
+COPY workers/requirements-alignment.txt /app/workers/requirements-alignment.txt
+RUN pip install --no-cache-dir -r workers/requirements-alignment.txt
+
+# Bring in the wavesplit library + the workers package.
+COPY wavesplit /app/wavesplit
+COPY workers /app/workers
+
+ENV PYTHONUNBUFFERED=1 \
+    QUEUE=align-audio \
+    GATEWAY_URL=http://localhost:4500 \
+    POLL_INTERVAL=1.0 \
+    WAVESPLIT_ALIGNMENT_ENGINE=auto
+
+ENTRYPOINT ["python", "-m", "workers.alignment_worker"]

@@ -1,0 +1,11 @@
+# Alignment worker (queue: align-audio) — runs on its OWN host.
+# Heavy deps isolated here: torch / torchaudio / onnxruntime / ctc-forced-aligner.
+# Also requires the ffmpeg/ffprobe binaries on PATH (wavesplit.audio shells out).
+requests>=2.31
+PyYAML>=6
+numpy>=1.26
+torch>=2.5
+torchaudio>=2.5
+onnxruntime>=1.17
+ctc-forced-aligner>=1.0.2
+Unidecode>=1.4
